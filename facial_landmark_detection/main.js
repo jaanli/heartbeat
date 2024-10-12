@@ -1,33 +1,29 @@
 'use strict';
 
-import {FaceNetNhwc} from './facenet_nhwc.js';
-import {FaceNetNchw} from './facenet_nchw.js';
-import {SsdMobilenetV2FaceNhwc} from './facial_landmark_detection/ssd_mobilenetv2_face_nhwc.js';
-import {SsdMobilenetV2FaceNchw} from './facial_landmark_detection/ssd_mobilenetv2_face_nchw.js';
-import * as ui from './common/ui.js';
-import * as utils from './common/utils.js';
-import * as SsdDecoder from './common/libs/ssdDecoder.js';
-import * as FaceRecognitionUtils from './libs/face_recognition_utils.js';
+import {FaceLandmarkNhwc} from './face_landmark_nhwc.js';
+import {FaceLandmarkNchw} from './face_landmark_nchw.js';
+import {SsdMobilenetV2FaceNhwc} from './ssd_mobilenetv2_face_nhwc.js';
+import {SsdMobilenetV2FaceNchw} from './ssd_mobilenetv2_face_nchw.js';
+import * as ui from '../common/ui.js';
+import * as utils from '../common/utils.js';
+import * as SsdDecoder from '../common/libs/ssdDecoder.js';
+import * as FaceLandmark from './libs/face_landmark_utils.js';
 
-const searchImgElem = document.getElementById('searchImage');
-const searchCanvasShowElem = document.getElementById('searchCanvasShow');
-const searchCanvasCamShowElem = document.getElementById('cameraShow');
-const targetImgElem = document.getElementById('targetImage');
-const camElem = document.getElementById('camElement');
-let targetEmbeddings = null;
-let searchEmbeddings = null;
+const imgElement = document.getElementById('feedElement');
+imgElement.src = './images/test.jpg';
+const camElement = document.getElementById('feedMediaElement');
 let fdModelName = '';
-const frModelName = 'facenet';
+const fldModelName = 'facelandmark';
 let layout = 'nhwc';
 let fdInstanceType = fdModelName + layout;
-let frInstanceType = frModelName + layout;
+let fldInstanceType = fldModelName + layout;
 let rafReq;
 let isFirstTimeLoad = true;
 let inputType = 'image';
 let fdInstance = null;
 let fdInputOptions;
-let frInstance = null;
-let frInputOptions;
+let fldInstance = null;
+let fldInputOptions;
 let stream = null;
 let loadTime = 0;
 let buildTime = 0;
@@ -77,52 +73,25 @@ $('#fdModelBtns .btn').on('change', async (e) => {
 // Click trigger to do inference with <img> element
 $('#img').click(async () => {
   if (inputType === 'camera') {
-    await ui.showProgressComponent('current', 'pending', 'pending');
     await stopCamRender();
-    // Set timeout to leave more time to make sure searchEmbeddings
-    // is clear after switching from camera tab to image tab
-    await new Promise((resolve) => {
-      setTimeout(() => {
-        searchEmbeddings = null;
-        resolve();
-      }, 1000);
-    });
   } else {
     return;
   }
   inputType = 'image';
-  searchEmbeddings = null;
+  $('.shoulddisplay').hide();
   await main();
 });
 
-$('#targetImgFile').change((e) => {
+$('#imageFile').change((e) => {
   const files = e.target.files;
   if (files.length > 0) {
-    $('#targetImage').removeAttr('height');
-    $('#targetImage').removeAttr('width');
-    targetImgElem.src = URL.createObjectURL(files[0]);
+    $('#feedElement').removeAttr('height');
+    $('#feedElement').removeAttr('width');
+    imgElement.src = URL.createObjectURL(files[0]);
   }
 });
 
-$('#targetImage').on('load', async () => {
-  if (inputType === 'camera') {
-    await stopCamRender();
-  }
-  targetEmbeddings = null;
-  await main();
-});
-
-$('#searchImgFile').change((e) => {
-  const files = e.target.files;
-  if (files.length > 0) {
-    $('#searchImage').removeAttr('height');
-    $('#searchImage').removeAttr('width');
-    searchImgElem.src = URL.createObjectURL(files[0]);
-  }
-});
-
-$('#searchImage').on('load', async () => {
-  searchEmbeddings = null;
+$('#feedElement').on('load', async () => {
   await main();
 });
 
@@ -155,36 +124,36 @@ async function renderCamStream() {
   if (!stream.active || stopRender) return;
   // If the video element's readyState is 0, the video's width and height are 0.
   // So check the readState here to make sure it is greater than 0.
-  if (camElem.readyState === 0) {
+  if (camElement.readyState === 0) {
     rafReq = requestAnimationFrame(renderCamStream);
     return;
   }
   isRendering = true;
-  // Clear search embeddings for each frame
-  searchEmbeddings = null;
-  const inputCanvas = utils.getVideoFrame(camElem);
+  const inputCanvas = utils.getVideoFrame(camElement);
   console.log('- Computing... ');
-  await predict(targetImgElem, camElem);
-  console.log(`  done in ${computeTime} ms.`);
+  const [totalComputeTime, strokedRects, keyPoints] =
+      await predict(camElement);
+  console.log(`  done in ${totalComputeTime} ms.`);
+  computeTime = totalComputeTime;
   showPerfResult();
-  await drawOutput(inputCanvas, searchCanvasCamShowElem);
-  $('#fps').text(`${(1000/computeTime).toFixed(0)} FPS`);
+  await drawOutput(inputCanvas, strokedRects, keyPoints);
+  $('#fps').text(`${(1000/totalComputeTime).toFixed(0)} FPS`);
   isRendering = false;
   if (!stopRender) {
     rafReq = requestAnimationFrame(renderCamStream);
   }
 }
 
-async function getEmbeddings(inputElem) {
-  const fdInputBuffer = utils.getInputTensor(inputElem, fdInputOptions);
+async function predict(inputElement) {
+  const fdInputBuffer = utils.getInputTensor(inputElement, fdInputOptions);
   let totalComputeTime = 0;
   let start = performance.now();
   const results = await fdInstance.compute(fdInputBuffer);
-  totalComputeTime = performance.now() - start;
+  totalComputeTime += performance.now() - start;
   const strokedRects = [];
-  const embeddings = [];
-  const height = inputElem.naturalHeight || inputElem.height;
-  const width = inputElem.naturalWidth || inputElem.width;
+  const keyPoints = [];
+  const height = inputElement.naturalHeight || inputElement.height;
+  const width = inputElement.naturalWidth || inputElement.width;
   const fdOutputArrary = [];
   for (const output of Object.entries(results)) {
     fdOutputArrary.push(output[1]);
@@ -199,7 +168,7 @@ async function getEmbeddings(inputElem) {
       fdSsdOutputs.outputBoxTensor,
       fdSsdOutputs.outputClassScoresTensor);
   boxesList = SsdDecoder.cropSsdBox(
-      inputElem, totalDetections, boxesList, fdInputOptions.margin);
+      inputElement, totalDetections, boxesList, fdInputOptions.margin);
   for (let i = 0; i < totalDetections; ++i) {
     let [ymin, xmin, ymax, xmax] = boxesList[i];
     ymin = Math.max(0, ymin) * height;
@@ -209,65 +178,32 @@ async function getEmbeddings(inputElem) {
     const prob = 1 / (1 + Math.exp(-scoresList[i]));
     const rect = [xmin, ymin, xmax - xmin, ymax - ymin, prob];
     strokedRects.push(rect);
-    const drawOptions = {
+    const drawOptions= {
       sx: xmin,
       sy: ymin,
       sWidth: rect[2],
       sHeight: rect[3],
-      dWidth: 160,
-      dHeight: 160,
+      dWidth: 128,
+      dHeight: 128,
     };
-    frInputOptions.drawOptions = drawOptions;
-    const frInputBuffer = utils.getInputTensor(inputElem, frInputOptions);
+    fldInputOptions.drawOptions = drawOptions;
+    const fldInputBuffer = utils.getInputTensor(inputElement, fldInputOptions);
     start = performance.now();
-    const results = await frInstance.compute(frInputBuffer);
+    const results = await fldInstance.compute(fldInputBuffer);
     totalComputeTime += performance.now() - start;
-    const [...normEmbedding] = Float32Array.from(results);
-    embeddings.push(normEmbedding);
+    keyPoints.push(results.slice());
   }
-  return {computeTime: totalComputeTime, strokedRects, embeddings};
+  return [totalComputeTime.toFixed(2), strokedRects, keyPoints];
 }
-
-async function predict(targetElem, searchElem) {
-  let flag1 = false;
-  let flag2 = false;
-  if (targetEmbeddings == null) {
-    targetEmbeddings = await getEmbeddings(targetElem);
-    flag1 = true;
-  }
-  if (searchEmbeddings == null) {
-    searchEmbeddings = await getEmbeddings(searchElem);
-    flag2 = true;
-  }
-  if (flag1 && flag2) {
-    computeTime = targetEmbeddings.computeTime + searchEmbeddings.computeTime;
-  } else if (flag1 && !flag2) {
-    computeTime = targetEmbeddings.computeTime;
-  } else if (!flag1 && flag2) {
-    computeTime = searchEmbeddings.computeTime;
-  }
-}
-
-async function drawOutput(searchElem, searchCanvasShowElem) {
+async function drawOutput(inputElement, strokedRects, keyPoints) {
+  const outputElement = document.getElementById('outputCanvas');
   $('#inferenceresult').show();
 
-  const targetTextClasses = [];
-  for (let i = 0; i < targetEmbeddings.embeddings.length; i++) {
-    targetTextClasses.push(i + 1);
-  }
-
-  const targetCanvasShowElem = document.getElementById('targetCanvasShow');
-  SsdDecoder.drawFaceRectangles(targetImgElem,
-      targetCanvasShowElem,
-      targetEmbeddings.strokedRects,
-      targetTextClasses, 300);
-  const searchTextClasses = FaceRecognitionUtils.getFRClass(
-      targetEmbeddings.embeddings, searchEmbeddings.embeddings,
-      frInstance.postOptions);
-  SsdDecoder.drawFaceRectangles(searchElem,
-      searchCanvasShowElem,
-      searchEmbeddings.strokedRects,
-      searchTextClasses, 300);
+  const texts = strokedRects.map((r) => r[4].toFixed(2));
+  SsdDecoder.drawFaceRectangles(
+      inputElement, outputElement, strokedRects, texts);
+  FaceLandmark.drawKeyPoints(
+      inputElement, outputElement, keyPoints, strokedRects);
 }
 
 function showPerfResult(medianComputeTime = undefined) {
@@ -275,10 +211,10 @@ function showPerfResult(medianComputeTime = undefined) {
   $('#buildTime').html(`${buildTime} ms`);
   if (medianComputeTime !== undefined) {
     $('#computeLabel').html('Median inference time:');
-    $('#computeTime').html(`${medianComputeTime.toFixed(2)} ms`);
+    $('#computeTime').html(`${medianComputeTime} ms`);
   } else {
     $('#computeLabel').html('Inference time:');
-    $('#computeTime').html(`${computeTime.toFixed(2)} ms`);
+    $('#computeTime').html(`${computeTime} ms`);
   }
 }
 
@@ -286,8 +222,8 @@ function constructNetObject(type) {
   const netObject = {
     'ssdmobilenetv2facenchw': new SsdMobilenetV2FaceNchw(),
     'ssdmobilenetv2facenhwc': new SsdMobilenetV2FaceNhwc(),
-    'facenetnchw': new FaceNetNchw(),
-    'facenetnhwc': new FaceNetNhwc(),
+    'facelandmarknchw': new FaceLandmarkNchw(),
+    'facelandmarknhwc': new FaceLandmarkNhwc(),
   };
 
   return netObject[type];
@@ -313,11 +249,11 @@ async function main() {
         lastBackend = lastBackend != backend ? backend : lastBackend;
       }
       fdInstanceType = fdModelName + layout;
-      frInstanceType = frModelName + layout;
+      fldInstanceType = fldModelName + layout;
       fdInstance = constructNetObject(fdInstanceType);
-      frInstance = constructNetObject(frInstanceType);
+      fldInstance = constructNetObject(fldInstanceType);
       fdInputOptions = fdInstance.inputOptions;
-      frInputOptions = frInstance.inputOptions;
+      fldInputOptions = fldInstance.inputOptions;
       isFirstTimeLoad = false;
       console.log(`- Model name: ${fdModelName}, Model layout: ${layout} -`);
       // UI shows model loading progress
@@ -331,11 +267,10 @@ async function main() {
         contextOptions['numThreads'] = numThreads;
       }
       start = performance.now();
-      const [fdOutputOperand, frOutputOperand] = await Promise.all([
+      const [fdOutputOperand, fldOutputOperand] = await Promise.all([
         fdInstance.load(contextOptions),
-        frInstance.load(contextOptions),
+        fldInstance.load(contextOptions),
       ]);
-
       loadTime = (performance.now() - start).toFixed(2);
       console.log(`  done in ${loadTime} ms.`);
       // UI shows model building progress
@@ -344,7 +279,7 @@ async function main() {
       start = performance.now();
       await Promise.all([
         fdInstance.build(fdOutputOperand),
-        frInstance.build(frOutputOperand),
+        fldInstance.build(fldOutputOperand),
       ]);
       buildTime = (performance.now() - start).toFixed(2);
       console.log(`  done in ${buildTime} ms.`);
@@ -353,38 +288,37 @@ async function main() {
     await ui.showProgressComponent('done', 'done', 'current');
     if (inputType === 'image') {
       const computeTimeArray = [];
+      let strokedRects;
+      let keyPoints;
       let medianComputeTime;
       console.log('- Computing... ');
       // Do warm up
-      await fdInstance.compute(new Float32Array(
+      const fdResults = await fdInstance.compute(new Float32Array(
           utils.sizeOfShape(fdInputOptions.inputShape)));
-      await frInstance.compute(new Float32Array(
-          utils.sizeOfShape(frInputOptions.inputShape)));
+      const fldResults = await fldInstance.compute(new Float32Array(
+          utils.sizeOfShape(fldInputOptions.inputShape)));
       for (let i = 0; i < numRuns; i++) {
-        if (numRuns > 1) {
-          // clear all predicted embeddings for benckmarking
-          targetEmbeddings = null;
-          searchEmbeddings = null;
-        }
-        await predict(targetImgElem, searchImgElem);
+        [computeTime, strokedRects, keyPoints] = await predict(imgElement);
         console.log(`  compute time ${i+1}: ${computeTime} ms`);
-        computeTimeArray.push(computeTime);
+        computeTimeArray.push(Number(computeTime));
       }
       if (numRuns > 1) {
         medianComputeTime = utils.getMedianValue(computeTimeArray);
-        console.log(
-            `  median compute time: ${medianComputeTime.toFixed(2)} ms`);
+        medianComputeTime = medianComputeTime.toFixed(2);
+        console.log(`  median compute time: ${medianComputeTime} ms`);
       }
+      console.log('Face Detection model outputs: ', fdResults);
+      console.log('Face Landmark model outputs: ', fldResults);
       await ui.showProgressComponent('done', 'done', 'done');
       $('#fps').hide();
       ui.readyShowResultComponents();
-      await drawOutput(searchImgElem, searchCanvasShowElem);
+      await drawOutput(imgElement, strokedRects, keyPoints);
       showPerfResult(medianComputeTime);
     } else if (inputType === 'camera') {
       stream = await utils.getMediaStream();
-      camElem.srcObject = stream;
+      camElement.srcObject = stream;
       stopRender = false;
-      camElem.onloadeddata = await renderCamStream();
+      camElement.onloadeddata = await renderCamStream();
       await ui.showProgressComponent('done', 'done', 'done');
       $('#fps').show();
       ui.readyShowResultComponents();
