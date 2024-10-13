@@ -7,7 +7,7 @@ export function weightsOrigin() {
   if (location.hostname.toLowerCase().indexOf('github.io') > -1) {
     return 'https://jaanli.github.io/heartbeat';
   } else {
-    return '..';
+    return '../heartbeat';
   }
 }
 
