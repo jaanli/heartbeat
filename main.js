@@ -170,7 +170,7 @@ async function renderCamStream() {
   await drawOutput(inputCanvas, searchCanvasCamShowElem);
   $('#fps').text(`${(1000/computeTime).toFixed(0)} FPS`);
   // DRAW CROPPED FACES AND SAVE THEM TO FRAMES
-  // await drawCroppedFaces(camElem, searchCanvasCamShowElem, searchEmbeddings.strokedRects)
+  await drawCroppedFaces(camElem, searchCanvasCamShowElem, searchEmbeddings.strokedRects)
   isRendering = false;
   if (!stopRender) {
     rafReq = requestAnimationFrame(renderCamStream);
@@ -293,7 +293,7 @@ function drawCroppedFaces(videoElem, canvas, rects) {
     ctx.drawImage(videoElem, x, y, w, h, 0, 0, canvas.width, canvas.height);
   });
   // Save the cropped frame to disk
-  saveCroppedFrame(canvas);
+  // saveCroppedFrame(canvas);
 }
 
 function showPerfResult(medianComputeTime = undefined) {
